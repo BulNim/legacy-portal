@@ -4,7 +4,10 @@ import jakarta.persistence.*;
 
 /**
  * 사용자 엔티티.
- * [스멜] role 이 int. 1=사원, 2=팀장, 3=임원 — 의미가 코드 곳곳에 매직넘버로 흩어진다.
+ * [리팩토링] role 필드를 Role enum으로 전환 + AttributeConverter로 DB엔 정수 그대로 저장(docs/4-12 BL-02).
+ * [보존 대상] 생성자·getRole()·setRole()는 레거시처럼 int 시그니처 유지(public 계약·DB·JSON·테스트 불변).
+ * 내부 필드만 enum이고 경계에서 code()/fromCode()로 변환한다. "role >= 2"(팀장 이상) 판정의 매직넘버 2는
+ * 호출부(ApprovalService/NoticeService)에서 {@code Role.MANAGER.code()} 로 대체한다(BL-06).
  */
 @Entity
 @Table(name = "users")
@@ -16,7 +19,8 @@ public class User {
 
     private String name;
     private String email;
-    private int role;       // 1=사원 2=팀장 3=임원 (서비스의 role>=2 판정에 쓰이는 매직넘버 → enum 후보)
+    @Convert(converter = RoleConverter.class)
+    private Role role;       // DB: 1=사원 2=팀장 3=임원
     private String dept;
 
     public User() {}
@@ -24,7 +28,7 @@ public class User {
     public User(String name, String email, int role, String dept) {
         this.name = name;
         this.email = email;
-        this.role = role;
+        this.role = Role.fromCode(role);   // [보존 대상] 생성자는 int를 받아 내부 enum으로 변환(호출 형태 유지)
         this.dept = dept;
     }
 
@@ -34,8 +38,9 @@ public class User {
     public void setName(String name) { this.name = name; }
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
-    public int getRole() { return role; }
-    public void setRole(int role) { this.role = role; }
+    // [보존 대상] int 시그니처 유지 — 내부 enum과 code()/fromCode()로 변환
+    public int getRole() { return role.code(); }
+    public void setRole(int role) { this.role = Role.fromCode(role); }
     public String getDept() { return dept; }
     public void setDept(String dept) { this.dept = dept; }
 }

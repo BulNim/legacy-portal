@@ -7,11 +7,12 @@ import java.time.LocalDateTime;
  * 결재 엔티티.
  *
  * [스멜] 빈약한 도메인 모델(Anemic Domain Model) — 데이터만 있고 행위가 없다.
- * [스멜] 원시 타입 집착(Primitive Obsession) — status, type, priority 가 모두 int.
- *        status: 0=임시저장, 1=상신, 2=승인, 3=반려, 9=취소  (의미가 코드 곳곳에 흩어짐)
- *        type:   1=지출, 2=휴가, 3=구매, 4=기타
- *        priority: 1=낮음, 2=보통, 3=높음
  * [스멜] 캡슐화 부재 — 모든 필드에 public setter. 누구나 상태를 마음대로 바꿀 수 있다.
+ *
+ * [리팩토링] type/status/priority 필드를 enum으로 전환 + AttributeConverter로 DB엔 정수 그대로 저장
+ * (docs/4-12 BL-02). @Enumerated(STRING/ORDINAL) 금지 — STRING은 저장값이 바뀌고 ORDINAL은 9와 순번이 어긋난다.
+ * [보존 대상] getter/setter는 레거시처럼 int 시그니처를 유지한다(public 계약·JSON·특성화 테스트 불변).
+ * 내부 필드만 enum이고, 경계(getter/setter)에서 code()/fromCode()로 int와 변환한다.
  */
 @Entity
 public class Approval {
@@ -22,9 +23,12 @@ public class Approval {
 
     private String title;
     private String content;
-    private int type;       // 1=지출 2=휴가 3=구매 4=기타 (의미를 주석으로만 설명 → enum 후보)
-    private int status;     // 0=임시저장 1=상신 2=승인 3=반려 9=취소 (숫자만 저장 → 의미 증발)
-    private int priority;   // 1=낮음 2=보통 3=높음
+    @Convert(converter = ApprovalTypeConverter.class)
+    private ApprovalType type;         // DB: 1=지출 2=휴가 3=구매 4=기타
+    @Convert(converter = ApprovalStatusConverter.class)
+    private ApprovalStatus status;     // DB: 0=임시저장 1=상신 2=승인 3=반려 9=취소
+    @Convert(converter = PriorityConverter.class)
+    private Priority priority;         // DB: 1=낮음 2=보통 3=높음
     private Long drafterId;     // 기안자
     private Long approverId;    // 결재자
     private String rejectReason;
@@ -38,12 +42,13 @@ public class Approval {
     public void setTitle(String title) { this.title = title; }
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }
-    public int getType() { return type; }
-    public void setType(int type) { this.type = type; }
-    public int getStatus() { return status; }
-    public void setStatus(int status) { this.status = status; }
-    public int getPriority() { return priority; }
-    public void setPriority(int priority) { this.priority = priority; }
+    // [보존 대상] getter/setter는 int 시그니처 유지 — 내부 enum과 code()/fromCode()로 변환한다.
+    public int getType() { return type.code(); }
+    public void setType(int type) { this.type = ApprovalType.fromCode(type); }
+    public int getStatus() { return status.code(); }
+    public void setStatus(int status) { this.status = ApprovalStatus.fromCode(status); }
+    public int getPriority() { return priority.code(); }
+    public void setPriority(int priority) { this.priority = Priority.fromCode(priority); }
     public Long getDrafterId() { return drafterId; }
     public void setDrafterId(Long drafterId) { this.drafterId = drafterId; }
     public Long getApproverId() { return approverId; }
