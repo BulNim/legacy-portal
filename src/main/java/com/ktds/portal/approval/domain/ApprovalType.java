@@ -1,4 +1,4 @@
-package com.ktds.portal.approval;
+package com.ktds.portal.approval.domain;
 
 /**
  * [리팩토링] 결재 유형 매직넘버(1/2/3/4)를 enum 상수로 (docs/4-12 BL-02, ApprovalAction과 동일 방식).

@@ -1,5 +1,8 @@
 package com.ktds.portal.approval;
 
+import com.ktds.portal.approval.domain.Approval;
+import com.ktds.portal.approval.repository.ApprovalRepository;
+import com.ktds.portal.approval.service.ApprovalService;
 import com.ktds.portal.user.User;
 import com.ktds.portal.user.UserRepository;
 import org.junit.jupiter.api.BeforeEach;

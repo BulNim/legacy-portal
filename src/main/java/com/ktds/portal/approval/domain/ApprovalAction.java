@@ -1,4 +1,4 @@
-package com.ktds.portal.approval;
+package com.ktds.portal.approval.domain;
 
 /**
  * [리팩토링] processApproval()의 action 매직넘버(1/2/3/9) → enum (docs/4-12 BL-02 연장).

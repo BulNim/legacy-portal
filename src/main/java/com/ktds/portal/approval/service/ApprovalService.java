@@ -1,5 +1,11 @@
-package com.ktds.portal.approval;
+package com.ktds.portal.approval.service;
 
+import com.ktds.portal.approval.domain.Approval;
+import com.ktds.portal.approval.domain.ApprovalAction;
+import com.ktds.portal.approval.domain.ApprovalStatus;
+import com.ktds.portal.approval.domain.ApprovalType;
+import com.ktds.portal.approval.domain.Priority;
+import com.ktds.portal.approval.repository.ApprovalRepository;
 import com.ktds.portal.common.FileAuditLogger;
 import com.ktds.portal.common.SmtpMailSender;
 import com.ktds.portal.user.Role;
