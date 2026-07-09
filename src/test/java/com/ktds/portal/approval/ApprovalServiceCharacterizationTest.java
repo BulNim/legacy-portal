@@ -3,6 +3,8 @@ package com.ktds.portal.approval;
 import com.ktds.portal.approval.domain.Approval;
 import com.ktds.portal.approval.repository.ApprovalRepository;
 import com.ktds.portal.approval.service.ApprovalService;
+import com.ktds.portal.common.FileAuditLogger;
+import com.ktds.portal.common.SmtpMailSender;
 import com.ktds.portal.user.User;
 import com.ktds.portal.user.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(ApprovalService.class)
+@Import({ApprovalService.class, SmtpMailSender.class, FileAuditLogger.class})
 class ApprovalServiceCharacterizationTest {
 
     @Autowired

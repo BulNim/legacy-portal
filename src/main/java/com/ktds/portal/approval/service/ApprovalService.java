@@ -3,12 +3,10 @@ package com.ktds.portal.approval.service;
 import com.ktds.portal.approval.domain.Approval;
 import com.ktds.portal.approval.domain.ApprovalAction;
 import com.ktds.portal.approval.domain.ApprovalStatus;
-import com.ktds.portal.approval.domain.ApprovalType;
 import com.ktds.portal.approval.domain.Priority;
 import com.ktds.portal.approval.repository.ApprovalRepository;
-import com.ktds.portal.common.FileAuditLogger;
-import com.ktds.portal.common.SmtpMailSender;
-import com.ktds.portal.user.Role;
+import com.ktds.portal.common.AuditLogger;
+import com.ktds.portal.common.MailSender;
 import com.ktds.portal.user.User;
 import com.ktds.portal.user.UserRepository;
 import org.springframework.stereotype.Service;
@@ -41,7 +39,11 @@ import java.util.List;
  *  - (항목 2) Long Method: processApproval()을 guard clause + submit/approve/reject/cancel private 메서드로 분해.
  *  - (항목 9) 약어 지역변수 d/u/s/proc → approval/actor/status로 rename, proc 제거하고 action 직접 사용.
  *  - (항목 9·10) statusLabel()의 tmp+5분기 if 제거 → ApprovalStatus.label()에 위임.
- *  나머지(God Class, 메일/감사로그 복붙, 승인/반려 권한판정 복붙, amountGrade()의 등급 기준값 등)는 아직 그대로다.
+ *  - (항목 6) statusLabel·amountGrade를 Approval 도메인으로 Move Method(amountGrade는 AmountGrade enum) → Feature Envy 해소.
+ *  - (항목 5) 강결합 해소: SmtpMailSender/FileAuditLogger 직접 new → MailSender/AuditLogger 인터페이스 생성자 주입(BL-03).
+ *  - (항목 1·6) 상태전이·권한 규칙을 Approval 도메인으로 이동(submit/approve/reject/cancel, 위반 시 return false) →
+ *    서비스는 "도메인 전이 성공 시에만 저장·메일·감사로그" 오케스트레이션만 담당(if-지옥 제거).
+ *  나머지(메일 본문·감사로그 조립이 아직 서비스 private, create()의 감사로그 복붙)는 다음 단계.
  */
 @Service
 public class ApprovalService {
@@ -49,13 +51,17 @@ public class ApprovalService {
     private final ApprovalRepository repo;
     private final UserRepository userRepo;
 
-    // [스멜5] 강결합 — 협력 객체를 생성자 주입 없이 직접 new 한다. 테스트에서 갈아끼울 수 없다.
-    private final SmtpMailSender mail = new SmtpMailSender();
-    private final FileAuditLogger audit = new FileAuditLogger();
+    // [리팩토링] BL-03 — 직접 new(강결합) 제거. 발송·기록을 인터페이스로 추상화해 생성자 주입(DIP).
+    //           테스트에서 가짜 MailSender/AuditLogger로 교체 가능해진다.
+    private final MailSender mail;
+    private final AuditLogger audit;
 
-    public ApprovalService(ApprovalRepository repo, UserRepository userRepo) {
+    public ApprovalService(ApprovalRepository repo, UserRepository userRepo,
+                           MailSender mail, AuditLogger audit) {
         this.repo = repo;
         this.userRepo = userRepo;
+        this.mail = mail;
+        this.audit = audit;
     }
 
     // [스멜8] 파라미터 8개.
@@ -115,96 +121,81 @@ public class ApprovalService {
             case SUBMIT -> submit(approval, userId);
             case APPROVE -> approve(approval, actor, userId);
             case REJECT -> reject(approval, actor, userId, reason);
-            case CANCEL -> cancel(approval, userId);
+            case CANCEL -> cancel(approval, actor, userId);
         }
     }
 
-    // [리팩토링] 상신 분기 추출. [상태 가드] 임시저장(DRAFT)일 때만 진행 — 아니면 조용히 무시(레거시 동작 보존).
+    // [리팩토링] 상태전이·권한은 Approval 도메인으로 이동. 서비스는 전이 성공(true)일 때만 부수효과(저장·메일·감사로그) 수행.
     private void submit(Approval approval, Long userId) {
-        if (ApprovalStatus.fromCode(approval.getStatus()) != ApprovalStatus.DRAFT) {
-            return;
+        if (!approval.submit()) {
+            return;   // 상태 가드 위반 → 조용히 무시(레거시 동작 보존)
         }
-        // [스멜6] 금액 기준 우선순위 자동 상향 — 도메인 규칙이 서비스에 박혀 있다(구조는 레거시 그대로).
-        // 금액 임계값 1000000은 범주형이 아니라 그대로 둔다.
-        if (ApprovalType.fromCode(approval.getType()) == ApprovalType.EXPENSE && approval.getAmount() >= 1000000) {
-            approval.setPriority(Priority.HIGH.code());
-        }
-        approval.setStatus(ApprovalStatus.SUBMITTED.code());
-        approval.setUpdatedAt(LocalDateTime.now());
         repo.save(approval);
         // [스멜4] 메일 발송 — 본문 생성 로직이 곳곳에 복붙(중복 제거는 별도 단계).
         User approver = userRepo.findById(approval.getApproverId()).orElse(null);
         if (approver != null) {
-            String body = "안녕하세요 " + approver.getName() + "님,\n"
-                    + "결재 요청이 도착했습니다.\n제목: " + approval.getTitle()
-                    + "\n기안자ID: " + approval.getDrafterId();
-            mail.send(approver.getEmail(), "[결재요청] " + approval.getTitle(), body);
+            mail.send(approver.getEmail(), "[결재요청] " + approval.getTitle(), submittedBody(approver, approval));
         }
         writeAudit("APPROVAL SUBMIT", approval.getId(), userId);
     }
 
-    // [리팩토링] 승인 분기 추출. [권한 가드] 상신 상태 + 결재자 본인 + 팀장 이상, 하나라도 아니면 조용히 무시.
+    // [리팩토링] 승인 — 상태전이·권한 판정은 approval.approve(actor)에 위임. 성공 시에만 부수효과.
     private void approve(Approval approval, User actor, Long userId) {
-        if (ApprovalStatus.fromCode(approval.getStatus()) != ApprovalStatus.SUBMITTED) {
+        if (!approval.approve(actor)) {
             return;
         }
-        if (approval.getApproverId() == null || !approval.getApproverId().equals(userId)) {
-            return;
-        }
-        if (actor.getRole() < Role.MANAGER.code()) {   // role>=2(팀장 이상)이 아니면 무시
-            return;
-        }
-        approval.setStatus(ApprovalStatus.APPROVED.code());
-        approval.setUpdatedAt(LocalDateTime.now());
         repo.save(approval);
         // [스멜4] 또 복붙된 메일 발송
         User drafter = userRepo.findById(approval.getDrafterId()).orElse(null);
         if (drafter != null) {
-            String body = "안녕하세요 " + drafter.getName() + "님,\n"
-                    + "결재가 승인되었습니다.\n제목: " + approval.getTitle();
-            mail.send(drafter.getEmail(), "[결재승인] " + approval.getTitle(), body);
+            mail.send(drafter.getEmail(), "[결재승인] " + approval.getTitle(), approvedBody(drafter, approval));
         }
         writeAudit("APPROVAL APPROVE", approval.getId(), userId);
     }
 
-    // [리팩토링] 반려 분기 추출. [권한 가드] 승인과 동일 판정(조건식 복붙은 여전히 남아있음, docs/4-5 4절).
+    // [리팩토링] 반려 — approval.reject(actor, reason)에 위임. 성공 시에만 부수효과.
     private void reject(Approval approval, User actor, Long userId, String reason) {
-        if (ApprovalStatus.fromCode(approval.getStatus()) != ApprovalStatus.SUBMITTED) {
+        if (!approval.reject(actor, reason)) {
             return;
         }
-        if (approval.getApproverId() == null || !approval.getApproverId().equals(userId)) {
-            return;
-        }
-        if (actor.getRole() < Role.MANAGER.code()) {
-            return;
-        }
-        approval.setStatus(ApprovalStatus.REJECTED.code());
-        approval.setRejectReason(reason);
-        approval.setUpdatedAt(LocalDateTime.now());
         repo.save(approval);
         User drafter = userRepo.findById(approval.getDrafterId()).orElse(null);
         if (drafter != null) {
-            String body = "안녕하세요 " + drafter.getName() + "님,\n"
-                    + "결재가 반려되었습니다.\n제목: " + approval.getTitle()
-                    + "\n사유: " + reason;
-            mail.send(drafter.getEmail(), "[결재반려] " + approval.getTitle(), body);
+            mail.send(drafter.getEmail(), "[결재반려] " + approval.getTitle(), rejectedBody(drafter, approval, reason));
         }
         writeAudit("APPROVAL REJECT", approval.getId(), userId);
     }
 
-    // [리팩토링] 취소 분기 추출. [권한 가드] 기안자 본인 + 아직 승인 전(DRAFT/SUBMITTED)일 때만.
-    private void cancel(Approval approval, Long userId) {
-        ApprovalStatus status = ApprovalStatus.fromCode(approval.getStatus());
-        if (status != ApprovalStatus.DRAFT && status != ApprovalStatus.SUBMITTED) {
+    // [리팩토링] 취소 — approval.cancel(actor)에 위임. 성공 시에만 부수효과(취소는 메일 없음, 레거시 그대로).
+    private void cancel(Approval approval, User actor, Long userId) {
+        if (!approval.cancel(actor)) {
             return;
         }
-        if (approval.getDrafterId() == null || !approval.getDrafterId().equals(userId)) {
-            return;
-        }
-        approval.setStatus(ApprovalStatus.CANCELED.code());
-        approval.setUpdatedAt(LocalDateTime.now());
         repo.save(approval);
         writeAudit("APPROVAL CANCEL", approval.getId(), userId);
+    }
+
+    // [리팩토링] submit()의 메일 본문 조립을 Extract Method(본문은 서비스 private 유지).
+    //           [보존 대상] 반환 문자열은 레거시와 100% 동일(기안자ID 포함).
+    private String submittedBody(User approver, Approval approval) {
+        return "안녕하세요 " + approver.getName() + "님,\n"
+                + "결재 요청이 도착했습니다.\n제목: " + approval.getTitle()
+                + "\n기안자ID: " + approval.getDrafterId();
+    }
+
+    // [리팩토링] approve()의 메일 본문 조립을 Extract Method(본문은 서비스 private 유지).
+    //           [보존 대상] 반환 문자열은 레거시와 100% 동일.
+    private String approvedBody(User drafter, Approval approval) {
+        return "안녕하세요 " + drafter.getName() + "님,\n"
+                + "결재가 승인되었습니다.\n제목: " + approval.getTitle();
+    }
+
+    // [리팩토링] reject()의 메일 본문 조립을 Extract Method(본문은 서비스 private 유지).
+    //           [보존 대상] 반환 문자열은 레거시와 100% 동일(사유 포함).
+    private String rejectedBody(User drafter, Approval approval, String reason) {
+        return "안녕하세요 " + drafter.getName() + "님,\n"
+                + "결재가 반려되었습니다.\n제목: " + approval.getTitle()
+                + "\n사유: " + reason;
     }
 
     // [스멜4] 그나마 추출했지만 create() 안에는 또 복붙이 남아 있다(불완전한 중복 제거).
@@ -213,20 +204,8 @@ public class ApprovalService {
         audit.write("[" + now + "] " + act + " id=" + id + " by=" + userId);
     }
 
-    // [리팩토링] tmp 임시변수 + 5분기 if 제거 — ApprovalStatus가 라벨을 스스로 가지므로 위임만 한다.
-    // [스멜1] statusLabel 자체는 여전히 서비스에 남아있다(화면 표시용 문자열을 서비스가 만드는 책임은 미해소).
-    public String statusLabel(Approval approval) {
-        return ApprovalStatus.fromCode(approval.getStatus()).label();
-    }
-
-    // [스멜6] Feature Envy — Approval 데이터를 꺼내 금액 등급을 서비스가 계산.
-    public String amountGrade(Approval approval) {
-        long a = approval.getAmount();   // a = amount(금액, 원)  [스멜9: 한 글자 약어]
-        if (a >= 10000000) return "S";   // [스멜3] 1000만원=S — 기준 숫자의 의미가 코드에 없음
-        else if (a >= 1000000) return "A";   // 100만원=A
-        else if (a >= 100000) return "B";    // 10만원=B
-        else return "C";
-    }
+    // [리팩토링] statusLabel(표현 규칙)·amountGrade(도메인 규칙)는 Approval 도메인으로 Move Method 완료.
+    //           → Approval.statusLabel() / Approval.amountGrade()(AmountGrade enum 위임). 서비스에서 제거해 Feature Envy 해소.
 
     public List<Approval> myDrafts(Long userId) {
         return repo.findByDrafterId(userId);

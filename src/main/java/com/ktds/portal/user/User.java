@@ -43,4 +43,9 @@ public class User {
     public void setRole(int role) { this.role = Role.fromCode(role); }
     public String getDept() { return dept; }
     public void setDept(String dept) { this.dept = dept; }
+
+    // [리팩토링] "role >= 2"(팀장 이상) 권한 판정을 도메인 메서드로 캡슐화(BL-06). 승인/반려 분기의 복붙 조건을 대체.
+    public boolean isManagerOrAbove() {
+        return role.code() >= Role.MANAGER.code();
+    }
 }
