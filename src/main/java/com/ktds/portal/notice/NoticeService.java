@@ -1,14 +1,15 @@
 package com.ktds.portal.notice;
 
-import com.ktds.portal.common.FileAuditLogger;
-import com.ktds.portal.common.SmtpMailSender;
-import com.ktds.portal.user.Role;
+import com.ktds.portal.common.AuditLogger;
+import com.ktds.portal.common.ConsoleAuditLogger;
+import com.ktds.portal.common.ConsoleMailSender;
+import com.ktds.portal.common.MailSender;
+import com.ktds.portal.user.UserRole;
 import com.ktds.portal.user.User;
 import com.ktds.portal.user.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 
 /**
  * 공지 서비스.
@@ -22,8 +23,9 @@ public class NoticeService {
     private final NoticeRepository repo;
     private final UserRepository userRepo;
 
-    private final SmtpMailSender mail = new SmtpMailSender();
-    private final FileAuditLogger audit = new FileAuditLogger();
+    // [리팩토링] 발송·기록을 인터페이스 타입으로 참조해 위임(구현체는 ConsoleMailSender/ConsoleAuditLogger).
+    private final MailSender mail = new ConsoleMailSender();
+    private final AuditLogger audit = new ConsoleAuditLogger();
 
     public NoticeService(NoticeRepository repo, UserRepository userRepo) {
         this.repo = repo;
@@ -41,9 +43,8 @@ public class NoticeService {
         n.setCreatedAt(LocalDateTime.now());
         repo.save(n);
 
-        // [스멜4] ApprovalService.create() 와 사실상 동일한 감사 로그 코드(복붙).
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        audit.write("[" + now + "] NOTICE CREATE id=" + n.getId() + " by=" + writerId);
+        // [리팩토링] 타임스탬프 생성+문자열 조립을 AuditLogger로 위임(중복 D1·D2·S1 제거).
+        audit.write("NOTICE CREATE", n.getId(), writerId);
         return n;
     }
 
@@ -54,8 +55,8 @@ public class NoticeService {
         if (u == null) return;
 
         // [스멜2] 게시 + 긴급공지 메일 + 로그를 한 메서드에서.
-        // [리팩토링] role>=2 매직넘버 → Role.MANAGER.code() (User.role이 Role enum이 되면서 함께 수정, docs/4-12 BL-02).
-        if (u.getRole() >= Role.MANAGER.code()) {   // role>=2 팀장 이상 게시권한 [ApprovalService 와 똑같은 판정 복붙은 여전히 남아있음]
+        // [리팩토링] role>=2 매직넘버 → UserRole.MANAGER.code() (User.role이 UserRole enum이 되면서 함께 수정, docs/4-12 BL-02).
+        if (u.getRole() >= UserRole.MANAGER.code()) {   // role>=2 팀장 이상 게시권한 [ApprovalService 와 똑같은 판정 복붙은 여전히 남아있음]
             if (n.getStatus() == 0) {  // status==0 → 임시(게시 전)일 때만
                 n.setStatus(1);   // 1 = 게시 (PUBLISHED)
                 repo.save(n);
@@ -68,8 +69,7 @@ public class NoticeService {
                         mail.send(member.getEmail(), "[긴급공지] " + n.getTitle(), body);
                     }
                 }
-                String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                audit.write("[" + now + "] NOTICE PUBLISH id=" + n.getId() + " by=" + userId);
+                audit.write("NOTICE PUBLISH", n.getId(), userId);
             }
         }
     }

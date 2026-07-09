@@ -3,7 +3,7 @@ package com.ktds.portal.approval.service;
 import com.ktds.portal.approval.domain.Approval;
 import com.ktds.portal.approval.domain.ApprovalAction;
 import com.ktds.portal.approval.domain.ApprovalStatus;
-import com.ktds.portal.approval.domain.Priority;
+import com.ktds.portal.approval.domain.ApprovalPriority;
 import com.ktds.portal.approval.repository.ApprovalRepository;
 import com.ktds.portal.common.AuditLogger;
 import com.ktds.portal.common.MailSender;
@@ -12,7 +12,6 @@ import com.ktds.portal.user.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -23,7 +22,7 @@ import java.util.List;
  *  2. Long Method          : processApproval() 한 메서드가 100줄 이상, 중첩 if 6단계.
  *  3. Magic Number         : status 0/1/2/3/9, type 1~4, role 1~3, priority 1~3 이 흩어져 있다.
  *  4. Duplicated Code      : 메일 본문 생성/감사 로그 기록이 메서드마다 복붙 되어 있다.
- *  5. Tight Coupling       : new SmtpMailSender(), new FileAuditLogger() 직접 생성(DI 없음).
+ *  5. Tight Coupling       : (해소) 과거 new SmtpMailSender()/new FileAuditLogger() 직접 생성 → MailSender/AuditLogger 주입.
  *  6. Feature Envy         : Approval 의 필드를 꺼내 서비스가 직접 상태/금액 규칙을 계산한다.
  *  7. Primitive Obsession  : 모든 분기를 int 비교로 처리한다.
  *  8. Long Parameter List  : create() 파라미터 8개.
@@ -71,7 +70,7 @@ public class ApprovalService {
         approval.setTitle(title);
         approval.setContent(content);
         approval.setType(type);   // type은 int 파라미터 그대로(매직넘버 아님)
-        approval.setPriority(urgent ? Priority.HIGH.code() : priority);   // [리팩토링] 매직넘버 3 → Priority.HIGH.code()
+        approval.setPriority(urgent ? ApprovalPriority.HIGH.code() : priority);   // [리팩토링] 매직넘버 3 → ApprovalPriority.HIGH.code()
         approval.setStatus(ApprovalStatus.DRAFT.code());   // [리팩토링] 매직넘버 0 → ApprovalStatus.DRAFT.code() (DB엔 여전히 0 저장)
         approval.setDrafterId(drafterId);
         approval.setApproverId(approverId);
@@ -80,11 +79,8 @@ public class ApprovalService {
         approval.setUpdatedAt(LocalDateTime.now());
         repo.save(approval);
 
-        // [스멜4] 감사 로그 기록 — 이 6줄이 submit/approve/reject/cancel 에도 복붙 되어 있다.
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        String line = "[" + now + "] APPROVAL CREATE id=" + approval.getId()
-                + " by=" + drafterId + " type=" + approval.getType();   // getType()은 int — 감사 로그 정수 출력 레거시 그대로
-        audit.write(line);
+        // [리팩토링] 타임스탬프 생성+문자열 조립을 AuditLogger로 위임(중복 D1·D2·S1 제거). 세 서비스 CREATE 로그가 일관해진다.
+        audit.write("APPROVAL CREATE", approval.getId(), drafterId);
         return approval;
     }
 
@@ -136,7 +132,7 @@ public class ApprovalService {
         if (approver != null) {
             mail.send(approver.getEmail(), "[결재요청] " + approval.getTitle(), submittedBody(approver, approval));
         }
-        writeAudit("APPROVAL SUBMIT", approval.getId(), userId);
+        audit.write("APPROVAL SUBMIT", approval.getId(), userId);
     }
 
     // [리팩토링] 승인 — 상태전이·권한 판정은 approval.approve(actor)에 위임. 성공 시에만 부수효과.
@@ -150,7 +146,7 @@ public class ApprovalService {
         if (drafter != null) {
             mail.send(drafter.getEmail(), "[결재승인] " + approval.getTitle(), approvedBody(drafter, approval));
         }
-        writeAudit("APPROVAL APPROVE", approval.getId(), userId);
+        audit.write("APPROVAL APPROVE", approval.getId(), userId);
     }
 
     // [리팩토링] 반려 — approval.reject(actor, reason)에 위임. 성공 시에만 부수효과.
@@ -163,7 +159,7 @@ public class ApprovalService {
         if (drafter != null) {
             mail.send(drafter.getEmail(), "[결재반려] " + approval.getTitle(), rejectedBody(drafter, approval, reason));
         }
-        writeAudit("APPROVAL REJECT", approval.getId(), userId);
+        audit.write("APPROVAL REJECT", approval.getId(), userId);
     }
 
     // [리팩토링] 취소 — approval.cancel(actor)에 위임. 성공 시에만 부수효과(취소는 메일 없음, 레거시 그대로).
@@ -172,7 +168,7 @@ public class ApprovalService {
             return;
         }
         repo.save(approval);
-        writeAudit("APPROVAL CANCEL", approval.getId(), userId);
+        audit.write("APPROVAL CANCEL", approval.getId(), userId);
     }
 
     // [리팩토링] submit()의 메일 본문 조립을 Extract Method(본문은 서비스 private 유지).
@@ -198,11 +194,8 @@ public class ApprovalService {
                 + "\n사유: " + reason;
     }
 
-    // [스멜4] 그나마 추출했지만 create() 안에는 또 복붙이 남아 있다(불완전한 중복 제거).
-    private void writeAudit(String act, Long id, Long userId) {
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        audit.write("[" + now + "] " + act + " id=" + id + " by=" + userId);
-    }
+    // [리팩토링] 감사 로그 기록은 AuditLogger.write(action, id, userId)로 완전히 위임 —
+    //           타임스탬프 생성·문자열 조립이 서비스에서 사라졌다(중복 D1·D2·S1 제거, 예전 writeAudit private 삭제).
 
     // [리팩토링] statusLabel(표현 규칙)·amountGrade(도메인 규칙)는 Approval 도메인으로 Move Method 완료.
     //           → Approval.statusLabel() / Approval.amountGrade()(AmountGrade enum 위임). 서비스에서 제거해 Feature Envy 해소.

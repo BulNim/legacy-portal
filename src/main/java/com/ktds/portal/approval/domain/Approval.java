@@ -32,8 +32,8 @@ public class Approval {
     private ApprovalType type;         // DB: 1=지출 2=휴가 3=구매 4=기타
     @Convert(converter = ApprovalStatusConverter.class)
     private ApprovalStatus status;     // DB: 0=임시저장 1=상신 2=승인 3=반려 9=취소
-    @Convert(converter = PriorityConverter.class)
-    private Priority priority;         // DB: 1=낮음 2=보통 3=높음
+    @Convert(converter = ApprovalPriorityConverter.class)
+    private ApprovalPriority priority;         // DB: 1=낮음 2=보통 3=높음
     private Long drafterId;     // 기안자
     private Long approverId;    // 결재자
     private String rejectReason;
@@ -53,7 +53,7 @@ public class Approval {
     public int getStatus() { return status.code(); }
     public void setStatus(int status) { this.status = ApprovalStatus.fromCode(status); }
     public int getPriority() { return priority.code(); }
-    public void setPriority(int priority) { this.priority = Priority.fromCode(priority); }
+    public void setPriority(int priority) { this.priority = ApprovalPriority.fromCode(priority); }
     public Long getDrafterId() { return drafterId; }
     public void setDrafterId(Long drafterId) { this.drafterId = drafterId; }
     public Long getApproverId() { return approverId; }
@@ -89,7 +89,7 @@ public class Approval {
         }
         // [도메인 규칙] 지출 && 100만원 이상이면 우선순위 자동 상향(레거시와 동일).
         if (type == ApprovalType.EXPENSE && amount >= AmountGrade.A.threshold()) {
-            priority = Priority.HIGH;
+            priority = ApprovalPriority.HIGH;
         }
         status = ApprovalStatus.SUBMITTED;
         touch();
